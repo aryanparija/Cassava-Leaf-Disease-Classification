@@ -1,9 +1,17 @@
 import streamlit as st
-import requests
 from PIL import Image
-import io
+import torch
+import torch.nn as nn
+import torchvision.models as models
+import torchvision.transforms as transforms
 
-st.set_page_config(page_title="Cassava Leaf Disease Classifier", page_icon="🌿")
+from huggingface_hub import hf_hub_download
+from pathlib import Path
+
+st.set_page_config(
+    page_title="Cassava Leaf Disease Classifier",
+    page_icon="🌿"
+)
 
 st.title("🌿 Cassava Leaf Disease Classifier")
 st.write("Upload a cassava leaf image to detect disease.")
@@ -16,35 +24,116 @@ DISEASE_INFO = {
     "Healthy": "No disease detected. The plant appears healthy."
 }
 
-uploaded_file = st.file_uploader("Choose a cassava leaf image", type=["jpg", "jpeg", "png"])
+LABELS = {
+    0: "Cassava Bacterial Blight (CBB)",
+    1: "Cassava Brown Streak Disease (CBSD)",
+    2: "Cassava Green Mottle (CGM)",
+    3: "Cassava Mosaic Disease (CMD)",
+    4: "Healthy"
+}
 
-if uploaded_file is not None:
-    image = Image.open(uploaded_file)
-    st.image(image, caption="Uploaded Image", use_container_width=True)
+MODEL_DIR = Path("models")
+MODEL_DIR.mkdir(exist_ok=True)
 
-    with st.spinner("Analyzing..."):
-        uploaded_file.seek(0)
-        response = requests.post(
-            "http://127.0.0.1:8000/predict",
-            files={"file": ("image.jpg", uploaded_file, "image/jpeg")}
+MODEL_PATH = MODEL_DIR / "efficientnet_b0_85.pth"
+
+if not MODEL_PATH.exists():
+    with st.spinner("Downloading model... (only first time)"):
+        hf_hub_download(
+            repo_id="aryanparija/cassava-leaf-disease-efficientnet-b0",
+            filename="efficientnet_b0_85.pth",
+            local_dir=MODEL_DIR
         )
 
-    if response.status_code == 200:
-        result = response.json()
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+])
 
-        disease = result["disease"]
-        confidence = result["confidence"]
-        probs = result["all_probabilities"]
 
-        if disease == "Healthy":
-            st.success(f"✅ {disease} ({confidence}% confidence)")
-        else:
-            st.error(f"⚠️ {disease} ({confidence}% confidence)")
+@st.cache_resource
+def load_model():
+    model = models.efficientnet_b0(weights=None)
 
-        st.info(DISEASE_INFO[disease])
+    in_features = model.classifier[1].in_features
 
-        st.subheader("All Class Probabilities")
-        for label, prob in sorted(probs.items(), key=lambda x: x[1], reverse=True):
-            st.progress(int(prob), text=f"{label}: {prob}%")
+    model.classifier = nn.Sequential(
+        nn.Dropout(p=0.3),
+        nn.Linear(in_features, 5)
+    )
+
+    model.load_state_dict(
+        torch.load(
+            MODEL_PATH,
+            map_location=torch.device("cpu")
+        )
+    )
+
+    model.eval()
+
+    return model
+
+
+model = load_model()
+
+uploaded_file = st.file_uploader(
+    "Choose a cassava leaf image",
+    type=["jpg", "jpeg", "png"]
+)
+
+if uploaded_file is not None:
+
+    image = Image.open(uploaded_file)
+
+    st.image(
+        image,
+        caption="Uploaded Image",
+        use_container_width=True
+    )
+
+    with st.spinner("Analyzing..."):
+
+        image = image.convert("RGB")
+
+        tensor = transform(image).unsqueeze(0)
+
+        with torch.no_grad():
+            outputs = model(tensor)
+            probabilities = torch.softmax(outputs, dim=1)[0]
+
+        predicted_class = probabilities.argmax().item()
+
+        disease = LABELS[predicted_class]
+
+        confidence = round(
+            probabilities[predicted_class].item() * 100,
+            2
+        )
+
+        probs = {
+            LABELS[i]: round(probabilities[i].item() * 100, 2)
+            for i in range(5)
+        }
+
+    if disease == "Healthy":
+        st.success(f"✅ {disease} ({confidence}% confidence)")
     else:
-        st.error("API error. Make sure FastAPI is running.")
+        st.error(f"⚠️ {disease} ({confidence}% confidence)")
+
+    st.info(DISEASE_INFO[disease])
+
+    st.subheader("All Class Probabilities")
+
+    for label, prob in sorted(
+        probs.items(),
+        key=lambda x: x[1],
+        reverse=True
+    ):
+        st.progress(
+            int(prob),
+            text=f"{label}: {prob}%"
+        )
