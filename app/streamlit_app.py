@@ -6,7 +6,6 @@ import torchvision.models as models
 import torchvision.transforms as transforms
 
 from huggingface_hub import hf_hub_download
-from pathlib import Path
 
 st.set_page_config(
     page_title="Cassava Leaf Disease Classifier",
@@ -32,19 +31,6 @@ LABELS = {
     4: "Healthy"
 }
 
-MODEL_DIR = Path("models")
-MODEL_DIR.mkdir(exist_ok=True)
-
-MODEL_PATH = MODEL_DIR / "efficientnet_b0_85.pth"
-
-if not MODEL_PATH.exists():
-    with st.spinner("Downloading model... (only first time)"):
-        hf_hub_download(
-            repo_id="aryanparija/cassava-leaf-disease-efficientnet-b0",
-            filename="efficientnet_b0_85.pth",
-            local_dir=MODEL_DIR
-        )
-
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -57,6 +43,12 @@ transform = transforms.Compose([
 
 @st.cache_resource
 def load_model():
+    with st.spinner("Downloading model... (only first time)"):
+        model_path = hf_hub_download(
+            repo_id="aryanparija/cassava-leaf-disease-efficientnet-b0",
+            filename="efficientnet_b0_85.pth"
+        )
+
     model = models.efficientnet_b0(weights=None)
 
     in_features = model.classifier[1].in_features
@@ -68,7 +60,7 @@ def load_model():
 
     model.load_state_dict(
         torch.load(
-            MODEL_PATH,
+            model_path,
             map_location=torch.device("cpu")
         )
     )
